@@ -81,7 +81,6 @@ nomeLogErroDiario = "erros_" & Year(Now) & "-" & Right("0" & Month(Now), 2) & "-
 caminhoLogDiario = pastaLog & "\" & nomeLogDiario
 caminhoLogErroDiario = pastaLog & "\" & nomeLogErroDiario
 
-' Monta cabeçalhos nos buffers
 Log "================================================================"
 Log "INÍCIO DA EXECUÇÃO: " & FormatDateTime(Now, 0)
 Log "================================================================"
@@ -156,14 +155,12 @@ Do Until arquivoConfigHandle.AtEndOfStream
                                     End If
                                     
                                     If exitCode = 0 Then
-                                        ' Grava apenas no buffer de sucesso
                                         Log "[" & FormatDateTime(fim, 3) & "] " & nomeBat
                                         Log "  Status: OK (Saída: 0) | Duração: " & DateDiff("s", inicio, fim) & "s"
                                         Log ""
                                         
                                         estado(nomeBat) = CStr(AgoraUnix())
                                     Else
-                                        ' Marca que houve erro e grava apenas no buffer de erro
                                         houveErro = True
                                         mensagemErro = Trim(mensagemSaida)
                                         
@@ -224,7 +221,6 @@ If Not executouAlgumBat Then
     Log ""
 End If
 
-' Monta rodapés
 Log "================================================================"
 Log "FIM DA EXECUÇÃO: " & FormatDateTime(Now, 3)
 Log "================================================================"
@@ -235,9 +231,6 @@ LogError "FIM DOS REGISTROS DE ERRO: " & FormatDateTime(Now, 0)
 LogError "================================================================"
 LogError ""
 
-' DECISÃO DE GRAVAÇÃO:
-' Se NÃO houve erro, grava o log de execução normal.
-' Se HOUVE erro, grava APENAS o arquivo de erro.
 If Not houveErro Then
     GravarNoArquivo caminhoLogDiario, logBufferNormal
 Else
@@ -249,11 +242,6 @@ Set WshShell = Nothing
 Set FSO = Nothing
 
 WScript.Quit 0
-
-
-' --- SUBROTINAS E FUNÇÕES ---
-
-' --- SUBROTINAS E FUNÇÕES ---
 
 Sub Log(texto)
     logBufferNormal = logBufferNormal & texto & vbCrLf
