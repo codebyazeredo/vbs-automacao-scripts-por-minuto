@@ -1,15 +1,17 @@
 Option Explicit
 
+Const DIAS_RETENCAO_LOGS = 60
+
 Dim FSO
 Dim WshShell
 Dim pastaBase
 Dim pastaBat
 Dim pastaLog
+Dim pastaLock
 Dim arquivoConfigPath
 Dim arquivoEstado
 Dim arquivoConfigHandle
 Dim arquivoSaida
-Dim logFile
 Dim estado
 Dim linha
 Dim partes
@@ -17,9 +19,10 @@ Dim nomeBat
 Dim intervalo
 Dim caminhoBat
 Dim caminhoSaida
-Dim caminhoLog
-Dim caminhoLogErro
-Dim nomeLog
+Dim caminhoLogDiario
+Dim caminhoLogErroDiario
+Dim nomeLogDiario
+Dim nomeLogErroDiario
 Dim agora
 Dim ultimaExecucao
 Dim deveExecutar
@@ -32,15 +35,20 @@ Dim mensagemSaida
 Dim mensagemErro
 Dim comando
 Dim aspas
+Dim logBuffer
+Dim caminhoLock
+Dim podeExecutar
 
 Set FSO = CreateObject("Scripting.FileSystemObject")
 Set WshShell = CreateObject("WScript.Shell")
 
 aspas = Chr(34)
+logBuffer = ""
 
 pastaBase = FSO.GetParentFolderName(WScript.ScriptFullName)
 pastaBat = pastaBase & "\bat"
 pastaLog = pastaBase & "\logs"
+pastaLock = pastaBase & "\locks"
 
 arquivoConfigPath = pastaBase & "\config.ini"
 arquivoEstado = pastaBase & "\estado.ini"
@@ -55,119 +63,233 @@ If Not FSO.FolderExists(pastaLog) Then
     FSO.CreateFolder pastaLog
 End If
 
+If Not FSO.FolderExists(pastaLock) Then
+    FSO.CreateFolder pastaLock
+End If
+
 If Not FSO.FileExists(arquivoConfigPath) Then
     WScript.Echo "ERRO: config.ini nao encontrado:"
     WScript.Echo arquivoConfigPath
     WScript.Quit 1
 End If
 
+LimparLogsAntigos
+
 Set estado = CarregarEstado()
 
 houveErro = False
 executouAlgumBat = False
 
-nomeLog = "execucao_" & _
-          Year(Now) & "-" & _
-          Right("0" & Month(Now), 2) & "-" & _
-          Right("0" & Day(Now), 2) & "_" & _
-          Right("0" & Hour(Now), 2) & "-" & _
-          Right("0" & Minute(Now), 2) & "-" & _
-          Right("0" & Second(Now), 2) & _
-          ".log"
+nomeLogDiario = "execucao_" & _
+    Year(Now) & "-" & _
+    Right("0" & Month(Now), 2) & "-" & _
+    Right("0" & Day(Now), 2) & ".log"
 
-caminhoLog = pastaLog & "\" & nomeLog
-caminhoLogErro = pastaLog & "\" & Left(nomeLog, Len(nomeLog) - 4) & "_ERRO.log"
+nomeLogErroDiario = "erros_" & _
+    Year(Now) & "-" & _
+    Right("0" & Month(Now), 2) & "-" & _
+    Right("0" & Day(Now), 2) & ".log"
 
-Set logFile = FSO.OpenTextFile(caminhoLog, 8, True)
+caminhoLogDiario = pastaLog & "\" & nomeLogDiario
+caminhoLogErroDiario = pastaLog & "\" & nomeLogErroDiario
 
-logFile.WriteLine "INICIO DA EXECUCAO"
-logFile.WriteLine ""
-logFile.WriteLine "============================================================="
-logFile.WriteLine ""
+Log ""
+Log "###############################################################"
+Log "INICIO DA EXECUCAO - " & FormatDateTime(Now, 0)
+Log ""
 
 Set arquivoConfigHandle = FSO.OpenTextFile(arquivoConfigPath, 1, False)
 
 Do Until arquivoConfigHandle.AtEndOfStream
+    
     linha = Trim(arquivoConfigHandle.ReadLine)
+    
     If linha <> "" Then
+        
         If Left(linha, 1) <> "#" And Left(linha, 1) <> ";" Then
+            
             partes = Split(linha, "=")
+            
             If UBound(partes) >= 1 Then
+                
                 nomeBat = Trim(partes(0))
                 intervalo = Trim(partes(1))
+                
                 If nomeBat <> "" And IsNumeric(intervalo) Then
+                    
                     intervalo = CLng(intervalo)
+                    
                     If intervalo > 0 Then
+                        
                         caminhoBat = pastaBat & "\" & nomeBat
+                        
                         If FSO.FileExists(caminhoBat) Then
+                            
                             agora = AgoraUnix()
                             deveExecutar = False
+                            
                             If estado.Exists(nomeBat) Then
+                                
                                 If IsNumeric(estado(nomeBat)) Then
+                                    
                                     ultimaExecucao = CLng(estado(nomeBat))
+                                    
                                     If (agora - ultimaExecucao) >= (intervalo * 60) Then
                                         deveExecutar = True
                                     End If
+                                    
                                 Else
                                     deveExecutar = True
                                 End If
+                                
                             Else
                                 deveExecutar = True
                             End If
+                            
                             If deveExecutar Then
-                                executouAlgumBat = True
-                                inicio = Now
-                                caminhoSaida = pastaLog & "\_" & Replace(nomeBat, ".bat", "") & "_" & AgoraUnix() & ".tmp"
-                                comando = "cmd.exe /d /c " & aspas & "cd /d " & aspas & pastaBat & aspas & " && call " & aspas & caminhoBat & aspas & " > " & aspas & caminhoSaida & aspas & " 2>&1" & aspas
-                                exitCode = WshShell.Run(comando, 0, True)
-                                fim = Now
-                                mensagemSaida = ""
-                                If FSO.FileExists(caminhoSaida) Then
-                                    Set arquivoSaida = FSO.OpenTextFile(caminhoSaida, 1, False)
-                                    Do Until arquivoSaida.AtEndOfStream
-                                        linha = arquivoSaida.ReadLine
-                                        If Trim(linha) <> "" Then
-                                            mensagemSaida = mensagemSaida & linha & vbCrLf
-                                        End If
-                                    Loop
-                                    arquivoSaida.Close
-                                    Set arquivoSaida = Nothing
-                                End If
-                                If exitCode = 0 Then
-                                    logFile.WriteLine "[" & FormatDateTime(fim, 3) & "] " & nomeBat & " | SUCCESS | SAIDA: 0 | DURACAO: " & DateDiff("s", inicio, fim) & " seg"
-                                    estado(nomeBat) = CStr(AgoraUnix())
-                                Else
-                                    houveErro = True
-                                    mensagemErro = Trim(mensagemSaida)
-                                    logFile.WriteLine "[" & FormatDateTime(fim, 3) & "] " & nomeBat & " | ERROR | SAIDA: " & exitCode & " | DURACAO: " & DateDiff("s", inicio, fim) & " seg"
-                                    If mensagemErro <> "" Then
-                                        logFile.WriteLine "    ERRO: " & Replace(mensagemErro, vbCrLf, " | ")
-                                    Else
-                                        logFile.WriteLine "    ERRO: Nenhuma mensagem retornada pelo BAT."
+                                
+                                caminhoLock = pastaLock & "\" & nomeBat & ".lock"
+                                
+                                ' Impede duas execuções simultâneas do mesmo BAT.
+                                podeExecutar = CriarLock(caminhoLock)
+                                
+                                If podeExecutar Then
+                                    
+                                    executouAlgumBat = True
+                                    inicio = Now
+                                    
+                                    caminhoSaida = pastaLog & "\_" & _
+                                        Replace(nomeBat, ".bat", "") & "_" & _
+                                        AgoraUnix() & ".tmp"
+                                    
+                                    comando = "cmd.exe /d /c " & _
+                                        aspas & _
+                                        "cd /d " & aspas & pastaBat & aspas & _
+                                        " && call " & aspas & caminhoBat & aspas & _
+                                        " > " & aspas & caminhoSaida & aspas & _
+                                        " 2>&1" & _
+                                        aspas
+                                    
+                                    ' Aguarda o BAT terminar antes de continuar.
+                                    exitCode = WshShell.Run(comando, 0, True)
+                                    
+                                    fim = Now
+                                    mensagemSaida = ""
+                                    
+                                    If FSO.FileExists(caminhoSaida) Then
+                                        
+                                        Set arquivoSaida = FSO.OpenTextFile(caminhoSaida, 1, False)
+                                        
+                                        Do Until arquivoSaida.AtEndOfStream
+                                            
+                                            linha = arquivoSaida.ReadLine
+                                            
+                                            If Trim(linha) <> "" Then
+                                                mensagemSaida = mensagemSaida & linha & vbCrLf
+                                            End If
+                                            
+                                        Loop
+                                        
+                                        arquivoSaida.Close
+                                        Set arquivoSaida = Nothing
+                                        
                                     End If
+                                    
+                                    If exitCode = 0 Then
+                                        
+                                        Log "[" & FormatDateTime(fim, 3) & "] " & _
+                                            nomeBat & _
+                                            " | SUCCESS | SAIDA: 0 | DURACAO: " & _
+                                            DateDiff("s", inicio, fim) & " seg"
+                                        
+                                        estado(nomeBat) = CStr(AgoraUnix())
+                                        
+                                    Else
+                                        
+                                        houveErro = True
+                                        
+                                        mensagemErro = Trim(mensagemSaida)
+                                        
+                                        Log "[" & FormatDateTime(fim, 3) & "] " & _
+                                            nomeBat & _
+                                            " | ERROR | SAIDA: " & _
+                                            exitCode & _
+                                            " | DURACAO: " & _
+                                            DateDiff("s", inicio, fim) & " seg"
+                                        
+                                        If mensagemErro <> "" Then
+                                            
+                                            Log "    ERRO: " & _
+                                                Replace(mensagemErro, vbCrLf, " | ")
+                                            
+                                        Else
+                                            
+                                            Log "    ERRO: Nenhuma mensagem retornada pelo BAT."
+                                            
+                                        End If
+                                        
+                                    End If
+                                    
+                                    If FSO.FileExists(caminhoSaida) Then
+                                        FSO.DeleteFile caminhoSaida, True
+                                    End If
+                                    
+                                    ' Libera o BAT para uma nova execução.
+                                    RemoverLock caminhoLock
+                                    
+                                Else
+                                    
+                                    Log "[" & FormatDateTime(Now, 3) & "] " & _
+                                        nomeBat & _
+                                        " | IGNORADO | BAT JA ESTA EM EXECUCAO"
+                                    
                                 End If
-                                If FSO.FileExists(caminhoSaida) Then
-                                    FSO.DeleteFile caminhoSaida, True
-                                End If
+                                
                             End If
+                            
                         Else
+                            
                             houveErro = True
-                            logFile.WriteLine "[" & FormatDateTime(Now, 3) & "] " & nomeBat & " | ERROR | BAT NAO ENCONTRADO"
+                            
+                            Log "[" & FormatDateTime(Now, 3) & "] " & _
+                                nomeBat & _
+                                " | ERROR | BAT NAO ENCONTRADO"
+                            
                         End If
+                        
                     Else
+                        
                         houveErro = True
-                        logFile.WriteLine "[" & FormatDateTime(Now, 3) & "] " & nomeBat & " | ERROR | INTERVALO INVALIDO: " & intervalo
+                        
+                        Log "[" & FormatDateTime(Now, 3) & "] " & _
+                            nomeBat & _
+                            " | ERROR | INTERVALO INVALIDO: " & _
+                            intervalo
+                        
                     End If
+                    
                 Else
+                    
                     houveErro = True
-                    logFile.WriteLine "[" & FormatDateTime(Now, 3) & "] ERROR | CONFIGURACAO INVALIDA: " & linha
+                    
+                    Log "[" & FormatDateTime(Now, 3) & "] ERROR | " & _
+                        "CONFIGURACAO INVALIDA: " & linha
+                    
                 End If
+                
             Else
+                
                 houveErro = True
-                logFile.WriteLine "[" & FormatDateTime(Now, 3) & "] ERROR | LINHA INVALIDA: " & linha
+                
+                Log "[" & FormatDateTime(Now, 3) & "] ERROR | " & _
+                    "LINHA INVALIDA: " & linha
+                
             End If
+            
         End If
+        
     End If
+    
 Loop
 
 arquivoConfigHandle.Close
@@ -176,25 +298,22 @@ Set arquivoConfigHandle = Nothing
 SalvarEstado estado, arquivoEstado
 
 If Not executouAlgumBat Then
-    logFile.WriteLine ""
-    logFile.WriteLine "[" & FormatDateTime(Now, 3) & "] NENHUM BAT PENDENTE PARA EXECUCAO"
+    
+    Log "[" & FormatDateTime(Now, 3) & "] " & _
+        "NENHUM BAT PENDENTE PARA EXECUCAO"
+    
 End If
 
-logFile.WriteLine ""
-logFile.WriteLine "============================================================="
-logFile.WriteLine ""
-logFile.WriteLine "[" & FormatDateTime(Now, 3) & "] FIM DA EXECUCAO"
+Log ""
+Log "FIM DA EXECUCAO - " & FormatDateTime(Now, 3)
+Log "###############################################################"
+Log ""
+Log ""
 
-logFile.Close
-Set logFile = Nothing
+GravarNoArquivo caminhoLogDiario, logBuffer
 
 If houveErro Then
-    If FSO.FileExists(caminhoLog) Then
-        If FSO.FileExists(caminhoLogErro) Then
-            FSO.DeleteFile caminhoLogErro, True
-        End If
-        FSO.MoveFile caminhoLog, caminhoLogErro
-    End If
+    GravarNoArquivo caminhoLogErroDiario, logBuffer
 End If
 
 Set estado = Nothing
@@ -203,44 +322,169 @@ Set FSO = Nothing
 
 WScript.Quit 0
 
+
+Sub Log(texto)
+    
+    logBuffer = logBuffer & texto & vbCrLf
+    
+End Sub
+
+
+Sub GravarNoArquivo(caminho, conteudo)
+    
+    Dim arquivo
+    
+    Set arquivo = FSO.OpenTextFile(caminho, 8, True)
+    
+    arquivo.Write conteudo
+    
+    arquivo.Close
+    
+    Set arquivo = Nothing
+    
+End Sub
+
+
+Sub LimparLogsAntigos()
+    
+    Dim arquivo
+    Dim limite
+    
+    limite = DateAdd("d", - DIAS_RETENCAO_LOGS, Now)
+    
+    For Each arquivo In FSO.GetFolder(pastaLog).Files
+        
+        If LCase(FSO.GetExtensionName(arquivo.Name)) = "log" Then
+            
+            If arquivo.DateLastModified < limite Then
+                FSO.DeleteFile arquivo.Path, True
+            End If
+            
+        End If
+        
+    Next
+    
+End Sub
+
+
 Function AgoraUnix()
-    AgoraUnix = DateDiff("s", DateSerial(1970, 1, 1), Now)
+    
+    AgoraUnix = DateDiff( _
+        "s", _
+        DateSerial(1970, 1, 1), _
+        Now _
+        )
+    
 End Function
 
+
 Function CarregarEstado()
+    
     Dim dict
     Dim arquivo
     Dim linha
     Dim partes
+    
     Set dict = CreateObject("Scripting.Dictionary")
+    
     If Not FSO.FileExists(arquivoEstado) Then
+        
         Set CarregarEstado = dict
+        
         Exit Function
+        
     End If
+    
     Set arquivo = FSO.OpenTextFile(arquivoEstado, 1, False)
+    
     Do Until arquivo.AtEndOfStream
+        
         linha = Trim(arquivo.ReadLine)
+        
         If linha <> "" Then
+            
             partes = Split(linha, "=")
+            
             If UBound(partes) >= 1 Then
+                
                 If IsNumeric(Trim(partes(1))) Then
+                    
                     dict(Trim(partes(0))) = Trim(partes(1))
+                    
                 End If
+                
             End If
+            
         End If
+        
     Loop
+    
     arquivo.Close
+    
     Set arquivo = Nothing
+    
     Set CarregarEstado = dict
+    
 End Function
 
+
 Sub SalvarEstado(dict, caminho)
+    
     Dim arquivo
     Dim chave
+    
     Set arquivo = FSO.CreateTextFile(caminho, True)
+    
     For Each chave In dict.Keys
+        
         arquivo.WriteLine chave & "=" & dict(chave)
+        
     Next
+    
     arquivo.Close
+    
     Set arquivo = Nothing
+    
+End Sub
+
+
+Function CriarLock(caminho)
+    
+    Dim arquivo
+    
+    CriarLock = False
+    
+    On Error Resume Next
+    
+    ' CreateTextFile(False) falha se o arquivo ja existir.
+    Set arquivo = FSO.CreateTextFile(caminho, False)
+    
+    If Err.Number = 0 Then
+        
+        arquivo.WriteLine "INICIO=" & FormatDateTime(Now, 0)
+        arquivo.Close
+        
+        Set arquivo = Nothing
+        
+        CriarLock = True
+        
+    End If
+    
+    Err.Clear
+    
+    On Error GoTo 0
+    
+End Function
+
+
+Sub RemoverLock(caminho)
+    
+    On Error Resume Next
+    
+    If FSO.FileExists(caminho) Then
+        FSO.DeleteFile caminho, True
+    End If
+    
+    On Error GoTo 0
+    
 End Sub
